@@ -1,0 +1,95 @@
+# 현대적인 싱글 노드 Iceberg 스택을 위한 Docker Compose 설정
+# 구성: REST Catalog (PostgreSQL Backend) + MinIO Storage
+services:
+  # 1. Iceberg 테이블 메타데이터 관리를 위한 REST 카탈로그
+  # 백엔드로 PostgreSQL을 사용하도록 수정됨
+  # http://localhost:8181 로 접속
+  catalog:
+    image: tabulario/iceberg-rest
+    container_name: iceberg-catalog
+    networks:
+      - iceberg-net
+    ports:
+      - "8181:8181"
+    # REST 카탈로그 환경 설정
+    environment:
+      # --- 백엔드 설정 (PostgreSQL) ---
+      # 백엔드 타입을 JDBC로 명시
+      - CATALOG_BACKEND=JDBC
+      # PostgreSQL JDBC 연결 URL (Docker 네트워크 내부의 postgres 서비스)
+      - CATALOG_URI=jdbc:postgresql://postgres:5432/iceberg_catalog
+      - CATALOG_JDBC_URL=jdbc:postgresql://postgres:5432/iceberg_catalog
+      # PostgreSQL 접속 정보 (아래 postgres 서비스와 일치)
+      - CATALOG_JDBC_USER=iceberg_user
+      - CATALOG_JDBC_PASSWORD=iceberg_password
+
+      # --- 웨어하우스 설정 (MinIO) ---
+      # 웨어하우스 경로는 그대로 s3://warehouse/ (MinIO의 warehouse 버킷)
+      - CATALOG_WAREHOUSE=s3://warehouse
+      # S3와 통신하기 위한 FileIO 구현체 지정
+      - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+      # S3 엔드포인트: Docker 네트워크 내부의 minio 서비스
+      - CATALOG_S3_ENDPOINT=http://minio:9000
+      # S3 접속 정보 (아래 minio 서비스와 일치)
+      - CATALOG_S3_ACCESS__KEY__ID=minioadmin
+      - CATALOG_S3_SECRET__ACCESS__KEY=minioadmin
+      # MinIO와 같은 S3 호환 스토리지를 위한 필수 설정
+      - CATALOG_S3_PATH__STYLE__ACCESS=true
+      # 리전 정보는 S3 클라이언트가 요구하므로 형식상 포함
+      - CATALOG_S3_REGION=us-east-1
+      - AWS_REGION=us-east-1
+    # postgres 서비스가 준비된 후에 catalog 서비스를 시작하도록 설정
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # 2. 데이터 파일 저장을 위한 MinIO 객체 스토리지
+  # S3 API: http://localhost:9000 | 웹 콘솔: http://localhost:9001
+  minio:
+    image: minio/minio
+    container_name: minio
+    networks:
+      - iceberg-net
+    ports:
+      - "9000:9000"  # S3 API 포트
+      - "9001:9001"  # 웹 콘솔 포트
+    volumes:
+      - ./iceberg-minio:/data # 데이터 영속성을 위한 볼륨 마운트
+    # MinIO 접속 정보
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    # MinIO 서버 실행 명령어 (콘솔 주소 포함)
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # 3. REST 카탈로그의 메타데이터 저장을 위한 PostgreSQL 서버 (새로 추가)
+  # 포트: http://localhost:5432
+  postgres:
+    image: postgres:13
+    container_name: iceberg-postgres
+    networks:
+      - iceberg-net
+    ports:
+      - "5432:5432"
+    # PostgreSQL 초기화 및 접속 정보
+    environment:
+      - POSTGRES_DB=iceberg_catalog
+      - POSTGRES_USER=iceberg_user
+      - POSTGRES_PASSWORD=iceberg_password
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data # DB 데이터 영속성을 위한 볼륨 마운트
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iceberg_user -d iceberg_catalog"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# 서비스들이 통신할 Docker 네트워크 정의
+networks:
+  iceberg-net:
+    driver: bridge

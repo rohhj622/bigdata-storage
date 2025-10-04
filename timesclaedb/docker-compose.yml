@@ -1,0 +1,17 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: timescaledb
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: your_password
+      POSTGRES_DB: mydb
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    command: postgres -c shared_preload_libraries=timescaledb
+
+volumes:
+  timescaledb_data:
